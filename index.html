@@ -105,6 +105,21 @@ textarea{flex:1;min-width:0;resize:none;border:1px solid var(--line);border-radi
 .demo{font-size:12px;text-align:center;background:var(--soft);color:var(--accent);padding:4px}
 .previewbox{display:flex;gap:8px;overflow-x:auto;max-height:50vh}
 .previewbox img,.previewbox video{max-height:48vh;max-width:100%;border-radius:10px;flex:none;object-fit:contain;background:var(--soft)}
+.callbtn{width:34px;height:34px;border-radius:50%;border:1px solid var(--line);background:var(--panel);color:var(--accent);display:grid;place-items:center;cursor:pointer;flex:none;padding:0}
+.callbtn.live{background:var(--accent);color:var(--mine-ink);border-color:transparent}
+#inviteBtn,#adminBadge{flex:none}
+.online{min-width:0;overflow:hidden}
+.onlinebtn{min-width:0}
+#online{overflow:hidden;text-overflow:ellipsis}
+@media (max-width:420px){header{gap:6px}h1{font-size:21px}#nickBtn{max-width:5.5em}}
+.callbar{display:flex;align-items:center;gap:8px;padding-block:8px;background:var(--soft);border-bottom:1px solid var(--line);font-size:13px}
+.callbar .who2{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.callbar .tm{font-variant-numeric:tabular-nums;color:var(--muted)}
+.callbar button{border:0;border-radius:999px;padding:6px 12px;font:inherit;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
+.callbar .join{background:var(--accent);color:var(--mine-ink)}
+.callbar .mute{background:var(--panel);color:var(--ink);border:1px solid var(--line)}
+.callbar .mute.on{background:var(--warn);color:#fff;border-color:transparent}
+.callbar .hang{background:var(--warn);color:#fff}
 .toast{position:fixed;left:50%;bottom:calc(90px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 16px;border-radius:999px;font-size:13px;z-index:30}
 @media (prefers-reduced-motion:reduce){.bar i{animation:none;width:100%}}
 </style>
@@ -117,9 +132,21 @@ textarea{flex:1;min-width:0;resize:none;border:1px solid var(--line);border-radi
     <span class="online"><button class="onlinebtn" id="onlineBtn" type="button" aria-label="접속자 보기"><span class="dot" id="dot"></span><span id="online">연결 중…</span></button></span>
     <button class="admin adminbtn" id="adminBadge" type="button" hidden aria-label="방장 메뉴">방장 ▾</button>
     <span class="spacer"></span>
+    <button class="callbtn" id="callBtn" type="button" aria-label="음성 통화">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/></svg>
+    </button>
     <button class="chip" id="inviteBtn" type="button">초대 링크</button>
     <button class="chip" id="nickBtn" type="button">이름</button>
   </header>
+  <div class="callbar pad" id="callBar" hidden>
+    <span class="who2" id="callWho"></span>
+    <span class="tm" id="callTime"></span>
+    <button class="join" id="callJoin" type="button">참여하기</button>
+    <button class="mute" id="callListen" type="button">듣기만</button>
+    <button class="mute" id="callMute" type="button" hidden>음소거</button>
+    <button class="hang" id="callHang" type="button" hidden>끊기</button>
+  </div>
+  <div id="callAudio" hidden></div>
   <main id="list" class="pad" aria-live="polite">
     <div class="sys" id="loading">대화를 불러오는 중…</div>
   </main>
@@ -257,6 +284,11 @@ create policy &quot;chat media read&quot; on storage.objects for select to anon,
   <button class="ghostbtn" id="clearBtn" type="button">이 방 대화 모두 지우기</button>
   <p class="small" id="clearHint" hidden>한 번 더 누르면 모든 사람 화면에서 대화가 전부 지워져요.</p>
 </div>
+<div class="people" id="callMenu" hidden>
+  <h3>음성 통화</h3>
+  <button class="ghostbtn" id="startTalk" type="button">📞 같이 통화하기<br><span class="small">모두 말하고 들어요</span></button>
+  <button class="ghostbtn" id="startRadio" type="button">📻 라디오 방송하기<br><span class="small">나만 말하고 다른 사람은 듣기만 해요</span></button>
+</div>
 <div class="overlay" id="kicked" hidden>
   <div class="card"><h2>톡톡방</h2><p>방장이 이 대화방에서 내보냈어요. 다시 들어오려면 방장에게 말해 주세요.</p></div>
 </div>
@@ -346,7 +378,7 @@ const BUCKET = "chat-media";
     e.preventDefault();
     const v = $("nickInput").value.trim().slice(0,20); if(!v) return;
     nick = v; store.set("tt_nick", nick); $("nickBtn").textContent = nick; $("nickModal").hidden = true;
-    channel?.track({ nick }); updateSend(); msg.focus();
+    trackMe(); updateSend(); msg.focus();
   });
 
   // ----- 방장 되기 -----
@@ -460,6 +492,7 @@ const BUCKET = "chat-media";
   }
   function showKicked(){
     if (kicked) return; kicked = true;
+    hangUp();
     $("kicked").hidden = false; msg.disabled = true; send.disabled = true; $("attach").disabled = true;
     try { channel?.untrack(); sb?.removeChannel(channel); } catch {}
   }
@@ -649,6 +682,167 @@ const BUCKET = "chat-media";
   }
   setInterval(renderTyping, 1000);
 
+  // ----- 음성 통화 · 라디오 -----
+  // 통화: 모두 말하고 들어요. 라디오: 켠 사람만 말하고 나머지는 듣기만 해요.
+  // 소리는 서버를 거치지 않고 사람끼리 바로 주고받아요 (연결 신호만 대화방 통로로 보내요).
+  const ICE = [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }];
+  const CALL_MAX = 8;
+  let callMode = null;          // null | "talk" | "listen" | "radio"
+  let localStream = null, muted = false, callStart = 0, heardRadio = false;
+  const peers = new Map();      // cid -> { pc, ice: [] }
+  const hasMic = m => m === "talk" || m === "radio";
+  function trackMe(){ return channel ? channel.track({ nick: nick || "", call: callMode }) : Promise.resolve(); }
+  function callersNow(){
+    if (!channel) return [];
+    return Object.entries(channel.presenceState())
+      .map(([cid, metas]) => ({ cid, nick: String((metas[0] && metas[0].nick) || "누군가").slice(0,20), call: metas[0] && metas[0].call }))
+      .filter(p => p.call);
+  }
+  function rtc(to, type, data){ channel?.send({ type:"broadcast", event:"rtc", payload:{ from: clientId, to, type, data } }); }
+
+  function closePeer(cid){
+    const p = peers.get(cid); if (!p) return;
+    try { p.pc.close(); } catch {}
+    peers.delete(cid);
+    for (const a of $("callAudio").querySelectorAll("audio")) if (a.dataset.cid === cid) { a.srcObject = null; a.remove(); }
+  }
+  function makePeer(cid){
+    closePeer(cid);
+    const pc = new RTCPeerConnection({ iceServers: ICE });
+    const p = { pc, ice: [] }; peers.set(cid, p);
+    pc.onicecandidate = e => { if (e.candidate) rtc(cid, "ice", e.candidate.toJSON()); };
+    pc.ontrack = e => {
+      let a = [...$("callAudio").querySelectorAll("audio")].find(x => x.dataset.cid === cid);
+      if (!a) { a = document.createElement("audio"); a.dataset.cid = cid; a.autoplay = true; a.playsInline = true; $("callAudio").appendChild(a); }
+      a.srcObject = (e.streams && e.streams[0]) || new MediaStream([e.track]); a.play().catch(() => {});
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === "failed" && peers.get(cid)?.pc === pc) { closePeer(cid); showNotice("한 사람과 통화 연결이 안 됐어요. 와이파이를 바꾸거나 다시 참여해 보세요."); }
+    };
+    return p;
+  }
+  async function callPeer(cid){
+    const { pc } = makePeer(cid);
+    if (localStream) localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+    else pc.addTransceiver("audio", { direction: "recvonly" });
+    await pc.setLocalDescription(await pc.createOffer());
+    rtc(cid, "offer", pc.localDescription.toJSON());
+  }
+  async function onRtc(m){
+    if (!m || m.to !== clientId || !callMode || kicked) return;
+    const from = String(m.from);
+    if (m.type === "offer") {
+      // 둘이 동시에 연결을 걸면 한쪽만 살려요
+      const ex = peers.get(from);
+      if (ex && ex.pc.signalingState === "have-local-offer" && clientId < from) return;
+      const p = makePeer(from), pc = p.pc;
+      await pc.setRemoteDescription(m.data);
+      const tr = localStream && localStream.getAudioTracks()[0];
+      if (tr) for (const t of pc.getTransceivers()) if (t.receiver.track.kind === "audio") { await t.sender.replaceTrack(tr); t.direction = "sendrecv"; }
+      await pc.setLocalDescription(await pc.createAnswer());
+      rtc(from, "answer", pc.localDescription.toJSON());
+      for (const c of p.ice.splice(0)) pc.addIceCandidate(c).catch(() => {});
+      return;
+    }
+    const p = peers.get(from); if (!p) return;
+    if (m.type === "answer") {
+      await p.pc.setRemoteDescription(m.data);
+      for (const c of p.ice.splice(0)) p.pc.addIceCandidate(c).catch(() => {});
+    } else if (m.type === "ice") {
+      if (p.pc.remoteDescription) p.pc.addIceCandidate(m.data).catch(() => {}); else p.ice.push(m.data);
+    }
+  }
+
+  async function joinCall(mode){
+    $("callMenu").hidden = true;
+    if (callMode || kicked) return;
+    if (demo || !channel) { toast("서버를 연결하면 통화할 수 있어요"); return; }
+    if (!nick) return askNick();
+    if (!window.RTCPeerConnection) { showNotice("이 브라우저에선 통화가 안 돼요. 크롬이나 사파리로 열어 주세요."); return; }
+    if (callersNow().length >= CALL_MAX) { showNotice(`통화는 ${CALL_MAX}명까지 같이 할 수 있어요.`); return; }
+    if (hasMic(mode)) {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { showNotice("이 브라우저에선 마이크를 쓸 수 없어요. 크롬이나 사파리로 열어 주세요."); return; }
+      try { localStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
+      catch { showNotice("마이크를 쓸 수 없어요. 브라우저에서 마이크를 허용해 주세요."); return; }
+    }
+    callMode = mode; muted = false; heardRadio = false; callStart = Date.now(); showNotice("");
+    await trackMe();
+    channel.send({ type:"broadcast", event:"call", payload:{ cid: clientId, act:"join", mic: hasMic(mode) } });
+    renderCall();
+  }
+  function hangUp(){
+    if (!callMode) return;
+    callMode = null;
+    channel?.send({ type:"broadcast", event:"call", payload:{ cid: clientId, act:"leave" } });
+    for (const cid of [...peers.keys()]) closePeer(cid);
+    localStream?.getTracks().forEach(t => t.stop()); localStream = null;
+    if (!kicked) trackMe();
+    renderCall();
+  }
+  function onCall(m){
+    if (!m || m.cid === clientId) return;
+    const cid = String(m.cid);
+    if (m.act === "leave") closePeer(cid);
+    else if (m.act === "join") {
+      // 이미 통화 중인 사람이 새로 온 사람에게 연결을 걸어요 (둘 다 듣기만이면 연결할 필요 없음)
+      if (callMode && (localStream || m.mic)) callPeer(cid).catch(() => {});
+      else if (!callMode) { try { navigator.vibrate && navigator.vibrate(200); } catch {} }
+    }
+    setTimeout(renderCall, 400);
+  }
+
+  function fmtDur(ms){ const s = Math.floor(ms/1000); return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`; }
+  function renderCall(){
+    const all = callersNow(), others = all.filter(p => p.cid !== clientId);
+    const radio = all.find(p => p.call === "radio");
+    const bar = $("callBar");
+    $("callBtn").classList.toggle("live", !!callMode);
+    if (!callMode && !others.length) { bar.hidden = true; return; }
+    if (callMode === "listen" && radio) heardRadio = true;
+    if (callMode === "listen" && others.every(p => p.call === "listen") && Date.now() - callStart > 4000) {
+      hangUp(); toast(heardRadio ? "라디오 방송이 끝났어요" : "말하는 사람이 없어서 통화를 나왔어요"); return;
+    }
+    bar.hidden = false;
+    const names = others.filter(p => p.call !== "listen").map(p => p.nick);
+    const listeners = others.filter(p => p.call === "listen").length;
+    let t;
+    if (callMode === "radio") t = `📻 라디오 방송 중 · 듣는 사람 ${others.length}명`;
+    else if (radio) t = callMode ? `📻 ${radio.nick} 님 라디오 듣는 중` : `📻 ${radio.nick} 님이 라디오 방송 중이에요`;
+    else if (callMode) t = names.length ? `📞 통화 중 · ${names.join(", ")}` : (listeners ? `📞 통화 중 · 듣는 사람 ${listeners}명` : "📞 다른 사람이 들어오길 기다리는 중…");
+    else t = names.length ? `📞 ${names.join(", ")} 님이 통화 중이에요` : `📞 ${others.length}명이 통화를 듣는 중이에요`;
+    if (callMode && !radio && callMode !== "radio" && listeners && names.length) t += ` · 듣는 사람 ${listeners}명`;
+    $("callWho").textContent = t;
+    $("callTime").textContent = callMode ? fmtDur(Date.now() - callStart) : "";
+    $("callJoin").hidden = !!callMode; $("callJoin").textContent = radio ? "듣기" : "참여하기";
+    $("callListen").hidden = !!callMode || !!radio;
+    $("callMute").hidden = !hasMic(callMode);
+    $("callMute").classList.toggle("on", muted); $("callMute").textContent = muted ? "음소거 풀기" : "음소거";
+    $("callHang").hidden = !callMode; $("callHang").textContent = callMode === "radio" ? "방송 끄기" : "나가기";
+  }
+  setInterval(() => { if (callMode) $("callTime").textContent = fmtDur(Date.now() - callStart); }, 1000);
+
+  $("callBtn").onclick = (e) => {
+    e.stopPropagation();
+    if (callMode) { $("callBar").scrollIntoView({ block:"nearest" }); return; }
+    const all = callersNow();
+    if (all.length) { joinCall(all.some(p => p.call === "radio") ? "listen" : "talk"); return; }
+    const box = $("callMenu");
+    if (!box.hidden) { box.hidden = true; return; }
+    box.hidden = false; placeMenu(box, $("callBtn"));
+  };
+  $("startTalk").onclick = () => joinCall("talk");
+  $("startRadio").onclick = () => joinCall("radio");
+  $("callJoin").onclick = () => joinCall(callersNow().some(p => p.call === "radio") ? "listen" : "talk");
+  $("callListen").onclick = () => joinCall("listen");
+  $("callHang").onclick = hangUp;
+  $("callMute").onclick = () => {
+    if (!localStream) return;
+    muted = !muted; localStream.getAudioTracks().forEach(t => { t.enabled = !muted; });
+    renderCall(); toast(muted ? "내 마이크를 껐어요" : "내 마이크를 켰어요");
+  };
+  document.addEventListener("click", e => { const box = $("callMenu"); if (!box.hidden && !box.contains(e.target)) box.hidden = true; });
+  window.addEventListener("pagehide", hangUp);
+
   // ----- 시작 -----
   // ----- 서버 연결 화면 -----
   $("copySql").onclick = async () => {
@@ -696,7 +890,9 @@ const BUCKET = "chat-media";
     return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
   }
   // ----- 비밀번호 -----
-  let roomPass = store.get("tt_pass") || "";
+  // 비밀번호는 기기에 기억하지 않아요: 들어올 때마다 입력 (예전에 저장된 것도 지움)
+  let roomPass = "";
+  if (store.get("tt_pass")) store.set("tt_pass", "");
   async function checkPass(c, p){
     try { const r = await window.supabase.createClient(c.u, c.k).rpc("check_pass", { p }); return r.error ? null : r.data === true; } catch { return null; }
   }
@@ -712,7 +908,7 @@ const BUCKET = "chat-media";
         const good = await checkPass(c, v);
         $("passBtn").disabled = false;
         if (good !== true) { $("passErr").textContent = "비밀번호가 맞지 않아요."; $("passErr").hidden = false; $("passInput").select(); return; }
-        roomPass = v; store.set("tt_pass", v); $("passModal").hidden = true; resolve(true);
+        roomPass = v; $("passModal").hidden = true; resolve(true);
       };
     });
   }
@@ -773,14 +969,17 @@ const BUCKET = "chat-media";
           if (b && b.length) showKicked();
         } else renderPeople();
       })
+      .on("broadcast", { event:"call" }, ({ payload }) => onCall(payload))
+      .on("broadcast", { event:"rtc" }, ({ payload }) => { onRtc(payload).catch(() => {}); })
+      .on("presence", { event:"leave" }, ({ key }) => { closePeer(String(key)); })
       .on("presence", { event:"sync" }, () => {
         const n = Object.keys(channel.presenceState()).length;
         $("online").textContent = n + "명 접속 중"; $("dot").classList.add("on");
         if (!loadAdminIds.t || Date.now() - loadAdminIds.t > 10000) { loadAdminIds.t = Date.now(); loadAdminIds().then(renderPeople); }
-        renderPeople();
+        renderPeople(); renderCall();
       })
       .subscribe(async status => {
-        if (status === "SUBSCRIBED") { $("online").textContent = "연결됨"; $("dot").classList.add("on"); await channel.track({ nick: nick || "" }); }
+        if (status === "SUBSCRIBED") { $("online").textContent = "연결됨"; $("dot").classList.add("on"); await trackMe(); }
         else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") { $("online").textContent = "다시 연결 중…"; $("dot").classList.remove("on"); }
       });
     return true;
