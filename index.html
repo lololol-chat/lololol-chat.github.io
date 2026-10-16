@@ -143,6 +143,7 @@ textarea{flex:1;min-width:0;resize:none;border:1px solid var(--line);border-radi
     <span class="tm" id="callTime"></span>
     <button class="join" id="callJoin" type="button">참여하기</button>
     <button class="mute" id="callListen" type="button">듣기만</button>
+    <button class="join" id="callSound" type="button" hidden>🔈 소리 켜기</button>
     <button class="mute" id="callMute" type="button" hidden>음소거</button>
     <button class="hang" id="callHang" type="button" hidden>끊기</button>
   </div>
@@ -492,7 +493,7 @@ const BUCKET = "chat-media";
   }
   function showKicked(){
     if (kicked) return; kicked = true;
-    hangUp();
+    hangUp(true);
     $("kicked").hidden = false; msg.disabled = true; send.disabled = true; $("attach").disabled = true;
     try { channel?.untrack(); sb?.removeChannel(channel); } catch {}
   }
@@ -709,15 +710,23 @@ const BUCKET = "chat-media";
   function makePeer(cid){
     closePeer(cid);
     const pc = new RTCPeerConnection({ iceServers: ICE });
-    const p = { pc, ice: [] }; peers.set(cid, p);
+    const p = { pc, ice: [], t: Date.now() }; peers.set(cid, p);
     pc.onicecandidate = e => { if (e.candidate) rtc(cid, "ice", e.candidate.toJSON()); };
     pc.ontrack = e => {
       let a = [...$("callAudio").querySelectorAll("audio")].find(x => x.dataset.cid === cid);
       if (!a) { a = document.createElement("audio"); a.dataset.cid = cid; a.autoplay = true; a.playsInline = true; $("callAudio").appendChild(a); }
-      a.srcObject = (e.streams && e.streams[0]) || new MediaStream([e.track]); a.play().catch(() => {});
+      a.srcObject = (e.streams && e.streams[0]) || new MediaStream([e.track]); playOne(a);
     };
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "failed" && peers.get(cid)?.pc === pc) { closePeer(cid); showNotice("한 사람과 통화 연결이 안 됐어요. 와이파이를 바꾸거나 다시 참여해 보세요."); }
+      if (peers.get(cid)?.pc !== pc) return;
+      const s = pc.connectionState;
+      if (s === "connected") { p.fails = 0; return; }
+      // 잠깐 끊기면 몇 초 기다렸다가, 그래도 안 되면 다시 연결해요
+      if (s === "disconnected") setTimeout(() => { if (peers.get(cid)?.pc === pc && pc.connectionState === "disconnected") rejoinCall([cid]); }, 5000);
+      if (s === "failed") {
+        closePeer(cid);
+        if (document.visibilityState === "visible") rejoinCall([cid]);
+      }
     };
     return p;
   }
@@ -753,36 +762,52 @@ const BUCKET = "chat-media";
     }
   }
 
-  async function joinCall(mode){
+  const MIC = { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } };
+  // 마이크가 꺼지면(다른 앱이 마이크를 가져가는 등) 화면에 돌아왔을 때 다시 켜요
+  function watchTrack(t){ t.onended = () => { if (callMode && document.visibilityState === "visible") ensureMic(); }; }
+  let joining = false;
+  async function joinCall(mode, auto){
     $("callMenu").hidden = true;
-    if (callMode || kicked) return;
+    if (callMode || kicked || joining) return;
     if (demo || !channel) { toast("서버를 연결하면 통화할 수 있어요"); return; }
     if (!nick) return askNick();
     if (!window.RTCPeerConnection) { showNotice("이 브라우저에선 통화가 안 돼요. 크롬이나 사파리로 열어 주세요."); return; }
-    if (callersNow().length >= CALL_MAX) { showNotice(`통화는 ${CALL_MAX}명까지 같이 할 수 있어요.`); return; }
-    if (hasMic(mode)) {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { showNotice("이 브라우저에선 마이크를 쓸 수 없어요. 크롬이나 사파리로 열어 주세요."); return; }
-      try { localStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
-      catch { showNotice("마이크를 쓸 수 없어요. 브라우저에서 마이크를 허용해 주세요."); return; }
-    }
-    callMode = mode; muted = false; heardRadio = false; callStart = Date.now(); showNotice("");
-    await trackMe();
-    channel.send({ type:"broadcast", event:"call", payload:{ cid: clientId, act:"join", mic: hasMic(mode) } });
-    renderCall();
+    const all = callersNow().filter(p => p.cid !== clientId);
+    if (all.length >= CALL_MAX) { showNotice(`통화는 ${CALL_MAX}명까지 같이 할 수 있어요.`); return; }
+    if (mode === "radio" && all.some(p => p.call === "radio")) mode = "listen";
+    joining = true;
+    try {
+      if (hasMic(mode)) {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { showNotice("이 브라우저에선 마이크를 쓸 수 없어요. 크롬이나 사파리로 열어 주세요."); return; }
+        try { localStream = await navigator.mediaDevices.getUserMedia(MIC); }
+        catch { showNotice("마이크를 쓸 수 없어요. 브라우저에서 마이크를 허용해 주세요."); return; }
+        localStream.getAudioTracks().forEach(watchTrack);
+      }
+      const saved = auto && savedCall();
+      callMode = mode; muted = false; heardRadio = false; callStart = (saved && saved.start) || Date.now(); showNotice("");
+      saveCall(); setMediaSession();
+      await trackMe();
+      channel.send({ type:"broadcast", event:"call", payload:{ cid: clientId, act:"join", mic: hasMic(mode) } });
+      renderCall();
+      if (auto) toast("통화에 다시 연결했어요");
+    } finally { joining = false; }
   }
-  function hangUp(){
+  // user: 직접 끊었을 때만 true. 페이지가 닫힐 때는 false라서 다시 열면 이어서 들어가요
+  function hangUp(user){
+    if (user) clearCall();
     if (!callMode) return;
     callMode = null;
     channel?.send({ type:"broadcast", event:"call", payload:{ cid: clientId, act:"leave" } });
     for (const cid of [...peers.keys()]) closePeer(cid);
-    localStream?.getTracks().forEach(t => t.stop()); localStream = null;
+    localStream?.getTracks().forEach(t => { t.onended = null; t.stop(); }); localStream = null;
     if (!kicked) trackMe();
-    renderCall();
+    setMediaSession(); renderCall();
   }
   function onCall(m){
     if (!m || m.cid === clientId) return;
     const cid = String(m.cid);
     if (m.act === "leave") closePeer(cid);
+    else if (m.act === "join" && Array.isArray(m.to) && !m.to.includes(clientId)) return;
     else if (m.act === "join") {
       // 이미 통화 중인 사람이 새로 온 사람에게 연결을 걸어요 (둘 다 듣기만이면 연결할 필요 없음)
       if (callMode && (localStream || m.mic)) callPeer(cid).catch(() => {});
@@ -800,7 +825,7 @@ const BUCKET = "chat-media";
     if (!callMode && !others.length) { bar.hidden = true; return; }
     if (callMode === "listen" && radio) heardRadio = true;
     if (callMode === "listen" && others.every(p => p.call === "listen") && Date.now() - callStart > 4000) {
-      hangUp(); toast(heardRadio ? "라디오 방송이 끝났어요" : "말하는 사람이 없어서 통화를 나왔어요"); return;
+      hangUp(true); toast(heardRadio ? "라디오 방송이 끝났어요" : "말하는 사람이 없어서 통화를 나왔어요"); return;
     }
     bar.hidden = false;
     const names = others.filter(p => p.call !== "listen").map(p => p.nick);
@@ -819,7 +844,59 @@ const BUCKET = "chat-media";
     $("callMute").classList.toggle("on", muted); $("callMute").textContent = muted ? "음소거 풀기" : "음소거";
     $("callHang").hidden = !callMode; $("callHang").textContent = callMode === "radio" ? "방송 끄기" : "나가기";
   }
-  setInterval(() => { if (callMode) $("callTime").textContent = fmtDur(Date.now() - callStart); }, 1000);
+  setInterval(() => { if (callMode) { $("callTime").textContent = fmtDur(Date.now() - callStart); saveCall(); } }, 1000);
+
+  // ----- 다른 앱에 갔다 와도 통화 이어가기 -----
+  // 통화 중인지를 이 탭에만 기억해 두고(10분), 화면에 돌아오거나 페이지가 다시 열리면 이어서 연결해요
+  const CALL_KEY = "tt_call";
+  function saveCall(){ try { if (callMode) sessionStorage.setItem(CALL_KEY, JSON.stringify({ mode: callMode, room, start: callStart, t: Date.now() })); } catch {} }
+  function clearCall(){ try { sessionStorage.removeItem(CALL_KEY); } catch {} }
+  function savedCall(){
+    try { const o = JSON.parse(sessionStorage.getItem(CALL_KEY) || "null"); return o && o.room === room && Date.now() - o.t < 10*60*1000 ? o : null; } catch { return null; }
+  }
+  function autoRejoin(){
+    const s = savedCall();
+    if (s && !callMode && !kicked && channel) joinCall(s.mode, true);
+  }
+  function setMediaSession(){
+    try {
+      if (!("mediaSession" in navigator)) return;
+      navigator.mediaSession.metadata = callMode ? new MediaMetadata({ title: callMode === "radio" ? "톡톡방 라디오 방송 중" : "톡톡방 통화 중", artist: "톡톡방" }) : null;
+      navigator.mediaSession.playbackState = callMode ? "playing" : "none";
+    } catch {}
+  }
+  function playOne(a){ a.play().then(() => { $("callSound").hidden = true; }).catch(() => { if (callMode) $("callSound").hidden = false; }); }
+  function playAll(){ for (const a of $("callAudio").querySelectorAll("audio")) playOne(a); }
+  async function ensureMic(){
+    if (!hasMic(callMode) || !navigator.mediaDevices) return;
+    const old = localStream && localStream.getAudioTracks()[0];
+    if (old && old.readyState === "live") return;
+    try {
+      const s = await navigator.mediaDevices.getUserMedia(MIC);
+      if (!callMode) { s.getTracks().forEach(t => t.stop()); return; }
+      const nt = s.getAudioTracks()[0]; nt.enabled = !muted; watchTrack(nt);
+      for (const { pc } of peers.values())
+        for (const snd of pc.getSenders()) if (snd.track && snd.track.kind === "audio") await snd.replaceTrack(nt).catch(() => {});
+      localStream = s;
+    } catch { showNotice("마이크가 꺼졌어요. '나가기' 후 다시 참여해 주세요."); }
+  }
+  const isUp = p => p && (p.pc.connectionState === "connected" || (["new", "connecting"].includes(p.pc.connectionState) && Date.now() - p.t < 15000));
+  // 끊긴 사람에게만 다시 연결해 달라고 알려요 (이미 통화 중인 쪽이 새로 연결을 걸어 줘요)
+  function rejoinCall(only){
+    if (!callMode || !channel || kicked) return;
+    trackMe();
+    const others = callersNow().filter(p => p.cid !== clientId && (localStream || p.call !== "listen"));
+    const broken = (only || others.map(p => p.cid)).filter(cid => !isUp(peers.get(cid)));
+    if (!others.length && !only) { channel.send({ type:"broadcast", event:"call", payload:{ cid: clientId, act:"join", mic: hasMic(callMode) } }); return; }
+    if (broken.length) channel.send({ type:"broadcast", event:"call", payload:{ cid: clientId, act:"join", mic: hasMic(callMode), to: broken } });
+  }
+  async function resumeCall(){ await ensureMic(); playAll(); rejoinCall(); }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    if (callMode) resumeCall(); else autoRejoin();
+  });
+  window.addEventListener("pageshow", e => { if (e.persisted) autoRejoin(); });
+  window.addEventListener("online", () => { if (callMode) setTimeout(rejoinCall, 1500); });
 
   $("callBtn").onclick = (e) => {
     e.stopPropagation();
@@ -834,14 +911,15 @@ const BUCKET = "chat-media";
   $("startRadio").onclick = () => joinCall("radio");
   $("callJoin").onclick = () => joinCall(callersNow().some(p => p.call === "radio") ? "listen" : "talk");
   $("callListen").onclick = () => joinCall("listen");
-  $("callHang").onclick = hangUp;
+  $("callHang").onclick = () => hangUp(true);
+  $("callSound").onclick = playAll;
   $("callMute").onclick = () => {
     if (!localStream) return;
     muted = !muted; localStream.getAudioTracks().forEach(t => { t.enabled = !muted; });
     renderCall(); toast(muted ? "내 마이크를 껐어요" : "내 마이크를 켰어요");
   };
   document.addEventListener("click", e => { const box = $("callMenu"); if (!box.hidden && !box.contains(e.target)) box.hidden = true; });
-  window.addEventListener("pagehide", hangUp);
+  window.addEventListener("pagehide", () => hangUp(false));
 
   // ----- 시작 -----
   // ----- 서버 연결 화면 -----
@@ -979,7 +1057,9 @@ const BUCKET = "chat-media";
         renderPeople(); renderCall();
       })
       .subscribe(async status => {
-        if (status === "SUBSCRIBED") { $("online").textContent = "연결됨"; $("dot").classList.add("on"); await trackMe(); }
+        if (status === "SUBSCRIBED") { $("online").textContent = "연결됨"; $("dot").classList.add("on"); await trackMe();
+          // 연결이 다시 붙으면 통화도 이어가요
+          if (callMode) setTimeout(rejoinCall, 1500); else setTimeout(autoRejoin, 1500); }
         else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") { $("online").textContent = "다시 연결 중…"; $("dot").classList.remove("on"); }
       });
     return true;
